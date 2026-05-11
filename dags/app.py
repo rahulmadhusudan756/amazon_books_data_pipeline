@@ -7,13 +7,19 @@
 #dependencies
 
 from datetime import datetime, timedelta
+from random import choice
+from urllib.parse import quote_plus
+
 from airflow import DAG
-import requests
-import pandas as pd
-from bs4 import BeautifulSoup
+from airflow.exceptions import AirflowException
 from airflow.operators.python import PythonOperator
-from airflow.providers.postgres.operators.postgres import PostgresOperator
 from airflow.providers.postgres.hooks.postgres import PostgresHook
+from airflow.providers.postgres.operators.postgres import PostgresOperator
+import pandas as pd
+import requests
+from bs4 import BeautifulSoup
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 #1) fetch amazon data (extract) 2) clean data (transform)
 
@@ -25,33 +31,60 @@ headers = {
     'User-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/107.0.0.0 Safari/537.36'
 }
 
+user_agents = [
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15',
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+]
 
-def get_amazon_data_books(num_books, ti):
-    # Base URL of the Amazon search results for data science books
-    base_url = f"https://www.amazon.com/s?k=data+engineering+books"
+
+def build_requests_session():
+    session = requests.Session()
+    retry = Retry(
+        total=3,
+        connect=3,
+        read=3,
+        backoff_factor=1,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["GET"],
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    return session
+
+
+def get_amazon_data_books(num_books, ti, dag_run=None):
+    search_term = "data engineering books"
+    if dag_run and getattr(dag_run, "conf", None):
+        search_term = dag_run.conf.get("search_term", search_term)
+
+    base_url = f"https://www.amazon.in/s?k={quote_plus(search_term)}"
 
     books = []
-    seen_titles = set()  # To keep track of seen titles
+    seen_titles = set()
+    session = build_requests_session()
+    max_pages = 10
 
     page = 1
 
-    while len(books) < num_books:
+    while len(books) < num_books and page <= max_pages:
         url = f"{base_url}&page={page}"
-        
-        # Send a request to the URL
-        response = requests.get(url, headers=headers)
-        
-        # Check if the request was successful
-        if response.status_code == 200:
-            # Parse the content of the request with BeautifulSoup
+
+        request_headers = dict(headers)
+        request_headers["User-agent"] = choice(user_agents)
+
+        try:
+            response = session.get(url, headers=request_headers, timeout=20)
+            response.raise_for_status()
+
             soup = BeautifulSoup(response.content, "html.parser")
-            
-            # Find book containers (you may need to adjust the class names based on the actual HTML structure)
             book_containers = soup.find_all("div", {"class": "s-result-item"})
-            
-            # Loop through the book containers and extract data
+
+            page_books_before = len(books)
             for book in book_containers:
-                title = book.find("span", {"class": "a-text-normal"})
+                title_link = book.find("h2")
+                title = title_link.find("span") if title_link else None
                 author = book.find("a", {"class": "a-size-base"})
                 price = book.find("span", {"class": "a-price-whole"})
                 rating = book.find("span", {"class": "a-icon-alt"})
@@ -68,23 +101,21 @@ def get_amazon_data_books(num_books, ti):
                             "Price": price.text.strip(),
                             "Rating": rating.text.strip(),
                         })
-            
-            # Increment the page number for the next iteration
-            page += 1
-        else:
-            print("Failed to retrieve the page")
-            break
 
-    # Limit to the requested number of books
+            if len(books) == page_books_before:
+                break
+
+            page += 1
+        except requests.RequestException as exc:
+            raise AirflowException(f"Failed to fetch Amazon search results for '{search_term}' from {url}: {exc}") from exc
+
+    if not books:
+        raise AirflowException(f"No book data found for search term '{search_term}'")
+
     books = books[:num_books]
-    
-    # Convert the list of dictionaries into a DataFrame
+
     df = pd.DataFrame(books)
-    
-    # Remove duplicates based on 'Title' column
     df.drop_duplicates(subset="Title", inplace=True)
-    
-    # Push the DataFrame to XCom
     ti.xcom_push(key='book_data', value=df.to_dict('records'))
 
 #3) create and store data in table on postgres (load)

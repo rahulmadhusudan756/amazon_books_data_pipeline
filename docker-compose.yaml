@@ -112,6 +112,8 @@ services:
       PGADMIN_DEFAULT_PASSWORD: root
     ports:
       - "5050:80"
+    volumes:
+      - pgadmin-data:/var/lib/pgadmin
 
   redis:
     # Redis is limited to 7.2-bookworm due to licencing change
@@ -298,3 +300,4 @@ services:
 
 volumes:
   postgres-db-volume:
+  pgadmin-data:
