@@ -13,6 +13,8 @@ jobs:
   deploy:
     if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: self-hosted
+    env:
+      AIRFLOW_UID: 50000
     steps:
       - name: Checkout code
         uses: actions/checkout@v4

@@ -11,6 +11,8 @@ on:
 jobs:
   validate-airflow:
     runs-on: ubuntu-latest
+    env:
+      AIRFLOW_UID: 50000
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
