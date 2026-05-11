@@ -70,3 +70,5 @@ Code to add in yaml file
 -----
 -----
 
+# CI/CD Workflow Demo
+- Automated with GitHub Actions
