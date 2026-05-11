@@ -55,7 +55,7 @@ def build_requests_session():
 
 
 def get_amazon_data_books(num_books, ti, dag_run=None):
-    search_term = "one piece manga books"
+    search_term = "data engineering books"
     if dag_run and getattr(dag_run, "conf", None):
         search_term = dag_run.conf.get("search_term", search_term)
 
